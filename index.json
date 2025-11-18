@@ -1,0 +1,110 @@
+import express from "express";
+import axios from "axios";
+import { Telegraf } from "telegraf";
+
+// ===== BOT CONFIG =====
+const bot = new Telegraf("8129553539:AAHewTVqBZNOg-XbCdIDMjrFWFZJtvn1hKQ"); // Telegram Token
+const GROQ_API_KEY = "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";
+
+// ===== MEMORY =====
+const userMemory = {};
+const MEMORY_LIMIT = 5;
+
+// ===== HELPER: Ask Groq =====
+async function askGroq(messages) {
+  const res = await axios.post(
+    "https://api.groq.com/openai/v1/chat/completions",
+    { model: "llama-3.1-70b-versatile", messages },
+    { headers: { Authorization: `Bearer ${GROQ_API_KEY}` } }
+  );
+  return res.data.choices[0].message.content;
+}
+
+// ===== MEMORY =====
+function addToMemory(chatId, msg) {
+  if (!userMemory[chatId]) userMemory[chatId] = [];
+  userMemory[chatId].push(msg);
+  if (userMemory[chatId].length > MEMORY_LIMIT) userMemory[chatId].shift();
+}
+function getMemoryMessages(chatId) {
+  return userMemory[chatId]?.map((text) => ({ role: "user", content: text })) || [];
+}
+
+// ===== /start =====
+bot.start((ctx) => {
+  ctx.reply(
+    `👋 হ্যালো! আমি *ShGPT*\nআমি বাংলা, ছবি, ভয়েস এবং ডকুমেন্ট বুঝতে পারি।\n\n🔥 শুরু করতে কিছু লিখে পাঠাও।`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+// ===== /image COMMAND =====
+bot.command("image", async (ctx) => {
+  const prompt = ctx.message.text.replace("/image", "").trim();
+  if (!prompt) return ctx.reply("❌ ছবি বানানোর জন্য কিছু লিখো।");
+  ctx.reply("🎨 ছবি তৈরি হচ্ছে...");
+
+  try {
+    const res = await axios.post(
+      "https://api.groq.com/openai/v1/images/generate",
+      { prompt, size: "1024x1024" },
+      { headers: { Authorization: `Bearer ${GROQ_API_KEY}` } }
+    );
+    ctx.reply(res.data.data[0].url);
+  } catch {
+    ctx.reply("❌ ছবি তৈরি করতে সমস্যা হয়েছে!");
+  }
+});
+
+// ===== TEXT MESSAGE =====
+bot.on("text", async (ctx) => {
+  const chatId = ctx.chat.id;
+  const text = ctx.message.text;
+
+  addToMemory(chatId, text);
+  ctx.reply("🤖 ShGPT লিখছে...");
+
+  try {
+    const messages = [
+      { role: "system", content: "You are ShGPT, a friendly Bangla chatbot." },
+      ...getMemoryMessages(chatId).map((msg) => ({ role: "user", content: msg })),
+    ];
+    const reply = await askGroq(messages);
+    ctx.reply(reply);
+  } catch {
+    ctx.reply("❌ কিছু সমস্যা হয়েছে!");
+  }
+});
+
+// ===== PHOTO =====
+bot.on("photo", async (ctx) => {
+  ctx.reply("📷 ছবি বিশ্লেষণ করছি...");
+  const fileId = ctx.message.photo.pop().file_id;
+  const file = await ctx.telegram.getFileLink(fileId);
+  const reply = await askGroq([{ role: "user", content: `এই ছবিটা বর্ণনা করো: ${file.href}` }]);
+  ctx.reply(reply);
+});
+
+// ===== DOCUMENT =====
+bot.on("document", async (ctx) => {
+  ctx.reply("📄 ডকুমেন্ট প্রসেস করছি...");
+  const fileId = ctx.message.document.file_id;
+  const file = await ctx.telegram.getFileLink(fileId);
+  const reply = await askGroq([{ role: "user", content: `ডকুমেন্টটি পড়ো এবং সারাংশ বানাও: ${file.href}` }]);
+  ctx.reply(reply);
+});
+
+// ===== VOICE =====
+bot.on("voice", async (ctx) => {
+  ctx.reply("🎤 ভয়েস প্রসেস হচ্ছে...");
+  const fileId = ctx.message.voice.file_id;
+  const file = await ctx.telegram.getFileLink(fileId);
+  const reply = await askGroq([{ role: "user", content: `এই ভয়েস অডিও শুনে লিখো: ${file.href}` }]);
+  ctx.reply(reply);
+});
+
+// ===== EXPRESS SERVER FOR WEBHOOK =====
+const app = express();
+app.use(bot.webhookCallback("/webhook"));
+app.get("/", (req, res) => res.send("ShGPT Bot is running!"));
+app.listen(3000, () => console.log("ShGPT server started"));
